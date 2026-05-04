@@ -38,6 +38,7 @@ from local_agent_server.api import (
     admin_router,
     conversations_router,
     workspaces_router,
+    skills_router,
     websocket_endpoint,
     websocket_chat_endpoint,
 )
@@ -72,6 +73,12 @@ async def lifespan(app: FastAPI):
         api_key=os.getenv("OPENHANDS_API_KEY") or os.getenv("ANTHROPIC_API_KEY"),
     )
     set_conversation_manager(cm)
+    
+    # Load skills from local directory
+    from local_agent_server.skills import load_skills_from_directory
+    skills_dir = Path(__file__).parent / "skills"
+    skill_count = load_skills_from_directory(str(skills_dir))
+    logger.info(f"Loaded {skill_count} skills")
     
     logger.info(f"Workspace: {wm.base_dir}")
     logger.info(f"API Key: {'configured' if cm.api_key else 'NOT CONFIGURED'}")
@@ -129,6 +136,7 @@ async def health():
 app.include_router(admin_router)
 app.include_router(conversations_router)
 app.include_router(workspaces_router)
+app.include_router(skills_router)
 
 # Register GitHub router if available
 if HAS_GITHUB and github_router:

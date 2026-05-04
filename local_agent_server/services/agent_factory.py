@@ -7,11 +7,11 @@ from typing import Optional, List
 
 from openhands.sdk import LLM, Agent, AgentContext
 from openhands.sdk.context import Skill
-from openhands.sdk.context.skills import load_skills_from_dir
 from openhands.tools.preset.default import get_default_tools
 from pydantic import SecretStr
 
 from ..models.schemas import AgentType
+from ..skills import get_skill_registry, invoke_skill, load_skills_from_directory
 
 logger = logging.getLogger(__name__)
 
