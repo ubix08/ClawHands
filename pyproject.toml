@@ -1,0 +1,36 @@
+[tool.poetry]
+name = "local-agent-server"
+version = "1.0.0"
+description = "Personal AI Coding Assistant - Built on OpenHands SDK"
+authors = ["Developer <dev@example.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+openhands-sdk = "^1.19"
+openhands-tools = "^1.19"
+fastapi = "^0.115"
+uvicorn = {extras = ["standard"], version = "^0.32"}
+websockets = "^13"
+httpx = "^0.28"
+pydantic = "^2.10"
+python-multipart = "^0.0.20"
+sse-starlette = "^3.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.3"
+pytest-asyncio = "^0.25"
+pytest-cov = "^6.0"
+ruff = "^0.9"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+ignore = ["E501"]
