@@ -76,7 +76,7 @@ async def lifespan(app: FastAPI):
     
     # Load skills from local directory
     from local_agent_server.skills import load_skills_from_directory
-    skills_dir = Path(__file__).parent / "skills"
+    skills_dir = Path(__file__).parent / "skills" / "skills"
     skill_count = load_skills_from_directory(str(skills_dir))
     logger.info(f"Loaded {skill_count} skills")
     
