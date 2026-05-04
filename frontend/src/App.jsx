@@ -3,6 +3,7 @@ import Header from './components/Header'
 import MessageList from './components/MessageList'
 import ChatInput from './components/ChatInput'
 import Welcome from './components/Welcome'
+import SettingsModal from './components/SettingsModal'
 
 const API_BASE = '/api'
 
@@ -11,6 +12,7 @@ function App() {
   const [messages, setMessages] = useState([])
   const [isLoading, setIsLoading] = useState(false)
   const [connected, setConnected] = useState(false)
+  const [showSettings, setShowSettings] = useState(false)
   const wsRef = useRef(null)
 
   // Create conversation on mount
@@ -119,7 +121,7 @@ function App() {
 
   return (
     <div className="app">
-      <Header connected={connected} />
+      <Header connected={connected} onOpenSettings={() => setShowSettings(true)} />
       
       <main className="chat">
         {messages.length === 0 && !isLoading ? (
@@ -134,6 +136,11 @@ function App() {
           </>
         )}
       </main>
+
+      <SettingsModal 
+        isOpen={showSettings} 
+        onClose={() => setShowSettings(false)} 
+      />
     </div>
   )
 }
