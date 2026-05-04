@@ -11,7 +11,6 @@ from openhands.tools.preset.default import get_default_tools
 from pydantic import SecretStr
 
 from ..models.schemas import AgentType
-from ..skills import get_skill_registry, invoke_skill, load_skills_from_directory
 
 logger = logging.getLogger(__name__)
 
@@ -92,28 +91,26 @@ class AgentFactory:
     def load_skills(self) -> List[Skill]:
         """Load skills from local directories.
         
-        Replicates original skill loading from:
-        - ./skills/
-        - ~/.openhands/skills/
+        Loads skills from our local skills system.
         """
         skills: List[Skill] = []
         
-        # Load from local skills directory
-        local_skills_dir = Path(__file__).parent.parent / "skills"
-        if local_skills_dir.exists():
-            repo_skills, knowledge_skills, _ = load_skills_from_dir(str(local_skills_dir))
-            skills.extend(list(repo_skills.values()))
-            skills.extend(list(knowledge_skills.values()))
-            logger.info(f"Loaded {len(repo_skills)} repo, {len(knowledge_skills)} knowledge skills")
+        # Get our skill registry
+        from ..skills import get_skill_registry
+        registry = get_skill_registry()
         
-        # Load from user skills directory
-        user_skills_dir = Path.home() / ".openhands" / "skills"
-        if user_skills_dir.exists():
-            user_repo, user_knowledge, _ = load_skills_from_dir(str(user_skills_dir))
-            skills.extend(list(user_repo.values()))
-            skills.extend(list(user_knowledge.values()))
-            logger.info(f"Loaded {len(user_repo)} user repo, {len(user_knowledge)} user knowledge skills")
+        # Convert our Skill to SDK Skill format
+        for skill_meta in registry.list_skills():
+            skill_obj = registry.get_skill(skill_meta.name)
+            if skill_obj:
+                skill = Skill(
+                    name=skill_obj.name,
+                    content=skill_obj.get_prompt(),
+                    trigger=None,  # Skills always available to agent
+                )
+                skills.append(skill)
         
+        logger.info(f"Loaded {len(skills)} skills from local registry")
         return skills
     
     def build_system_message_suffix(
