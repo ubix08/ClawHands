@@ -16,6 +16,7 @@ httpx = "^0.28"
 pydantic = "^2.10"
 python-multipart = "^0.0.20"
 sse-starlette = "^3.0"
+PyGithub = "^2.5"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3"

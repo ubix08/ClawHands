@@ -42,6 +42,14 @@ from local_agent_server.api import (
     websocket_chat_endpoint,
 )
 
+# Try to import GitHub routes
+try:
+    from local_agent_server.api.routes.github import router as github_router
+    HAS_GITHUB = True
+except ImportError:
+    HAS_GITHUB = False
+    github_router = None
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -121,6 +129,11 @@ async def health():
 app.include_router(admin_router)
 app.include_router(conversations_router)
 app.include_router(workspaces_router)
+
+# Register GitHub router if available
+if HAS_GITHUB and github_router:
+    app.include_router(github_router)
+    logger.info("GitHub integration enabled")
 
 
 # WebSocket endpoints
