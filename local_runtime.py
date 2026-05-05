@@ -1471,7 +1471,6 @@ def create_app(runtime: "LocalRuntime" = None) -> "FastAPI":
         
         return SendMessageResponse(events=events)
     
-    # SSE Event Streaming - Same as OpenHands
     @conv_router.get("/{conversation_id}/events")
     async def stream_events(
         conversation_id: str,
@@ -1483,12 +1482,12 @@ def create_app(runtime: "LocalRuntime" = None) -> "FastAPI":
         async def event_generator():
             # Send initial events
             since_dt = datetime.fromisoformat(since) if since else None
-            events = asyncio.create_task(runtime.get_events(conversation_id, since_dt))
+            events = await runtime.get_events(conversation_id, since_dt)
             
             yield "data: [\n"
             
             comma = False
-            for event in asyncio.run_until_complete(events):
+            for event in events:
                 if comma:
                     yield ",\n"
                 yield json.dumps(event)
