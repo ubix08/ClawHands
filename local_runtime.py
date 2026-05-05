@@ -339,43 +339,54 @@ class SkillLoader:
 # MICROAGENT LOADER
 # ============================================================================
 
-# Note: Microagent class not in SDK 1.19.1 - using simplified implementation
-@dataclass
-class LocalMicroagent:
-    """Simple microagent for local runtime."""
-    name: str
-    instructions: str
-    triggers: list[str] = field(default_factory=list)
-
-
+# Use SDK's Skill class - microagents are just skills with triggers
 class MicroagentLoader:
-    """Load microagents - simplified for SDK 1.19.1."""
+    """Load microagents using SDK's Skill class.
+    
+    In SDK 1.19.1, microagents are implemented as Skills with triggers.
+    Load from .md files with YAML frontmatter.
+    """
     
     def __init__(self, runtime: "LocalRuntime"):
         self.runtime = runtime
-        self._loaded_microagents: dict[str, LocalMicroagent] = {}
+        self._loaded_skills: dict[str, Skill] = {}
     
     async def load_microagent(
         self,
         name: str,
         content: str,
         triggers: list[str] | None = None,
-    ) -> LocalMicroagent:
-        microagent = LocalMicroagent(
+    ) -> Skill:
+        """Load a microagent as an SDK Skill.
+        
+        Args:
+            name: microagent name
+            content: prompt/instructions
+            triggers: keywords to trigger this microagent
+        """
+        # Create skill with triggers
+        skill = Skill(
             name=name,
             instructions=content,
             triggers=triggers or [],
         )
-        self._loaded_microagents[name] = microagent
-        logger.info(f"Loaded microagent: {name}")
-        return microagent
+        self._loaded_skills[name] = skill
+        logger.info(f"Loaded microagent: {name} (triggers: {triggers})")
+        return skill
     
-    def match_microagent(self, message: str) -> LocalMicroagent | None:
-        for ma in self._loaded_microagents.values():
-            for trigger in ma.triggers:
-                if trigger.lower() in message.lower():
-                    return ma
+    def match_microagent(self, message: str) -> Skill | None:
+        """Match a microagent based on message content."""
+        for skill in self._loaded_skills.values():
+            skill_triggers = getattr(skill, 'triggers', [])
+            if skill_triggers:
+                for trigger in skill_triggers:
+                    if trigger.lower() in message.lower():
+                        return skill
         return None
+    
+    def list_microagents(self) -> list[Skill]:
+        """List all loaded microagents."""
+        return list(self._loaded_skills.values())
 
 
 # ============================================================================
@@ -967,10 +978,10 @@ class LocalRuntime:
     # MICROAGENTS
     # ========================================================================
     
-    async def load_microagent(self, name: str, content: str, triggers: list[str] = None) -> LocalMicroagent:
+    async def load_microagent(self, name: str, content: str, triggers: list[str] = None) -> Skill:
         return await self._microagent_loader.load_microagent(name, content, triggers)
     
-    def match_microagent(self, message: str) -> LocalMicroagent | None:
+    def match_microagent(self, message: str) -> Skill | None:
         return self._microagent_loader.match_microagent(message)
     
     # ========================================================================
