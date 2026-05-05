@@ -18,6 +18,7 @@ import logging
 import os
 import re
 import subprocess
+import yaml  # For parsing skill frontmatter
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -259,23 +260,24 @@ class SkillLoader:
         triggers: list[str] | None = None,
         source: str = "local",
     ) -> Skill:
-        keyword_triggers = []
-        task_triggers = []
+        """Load a skill using SDK field names.
         
+        SDK Skill fields: name, content, trigger (not instructions/triggers!)
+        """
+        # Determine trigger type
+        trigger = None
         if triggers:
-            for t in triggers:
-                if t.startswith("keyword:"):
-                    keyword_triggers.append(KeywordTrigger(keyword=t[9:]))
-                elif t.startswith("task:"):
-                    task_triggers.append(TaskTrigger(description=t[5:]))
-                else:
-                    task_triggers.append(TaskTrigger(description=t))
+            # TaskTrigger if starts with "/", otherwise KeywordTrigger
+            if any(t.startswith("/") for t in triggers):
+                trigger = TaskTrigger(triggers=triggers)
+            else:
+                trigger = KeywordTrigger(keywords=triggers)
         
+        # Create skill with SDK field names (not instructions!)
         skill = Skill(
             name=name,
-            instructions=content,
-            keyword_triggers=keyword_triggers,
-            task_triggers=task_triggers,
+            content=content,  # SDK field, not "instructions"
+            trigger=trigger,  # SDK field, not "triggers"
             source=source,
         )
         
@@ -284,30 +286,42 @@ class SkillLoader:
         return skill
     
     async def load_skills_from_directory(self, skills_dir: str) -> list[Skill]:
+        """Load skills from a directory - scans subdirectories too."""
         skills = []
         dir_path = Path(skills_dir)
         
         if not dir_path.exists():
+            logger.warning(f"Skills directory does not exist: {skills_dir}")
             return []
         
-        for skill_file in dir_path.glob("*.md"):
+        # Use rglob to find all .md files in subdirectories too
+        for skill_file in dir_path.rglob("*.md"):
+            if skill_file.name == "README.md":
+                continue
+            
             try:
-                content = skill_file.read_text()
+                content = skill_file.read_text(encoding="utf-8")
                 name = skill_file.stem
-                triggers = []
                 
+                # Parse YAML frontmatter
+                triggers = []
                 if content.startswith("---"):
                     parts = content.split("---", 2)
                     if len(parts) >= 3:
                         fm_text = parts[1]
-                        trigger_match = re.search(r'triggers:\s*\n((?:\s+-\s+.*\n)*)', fm_text)
-                        if trigger_match:
-                            for line in trigger_match.group(1).strip().split("\n"):
-                                if line.strip().startswith("-"):
-                                    triggers.append(line.strip()[1:].strip())
+                        fm = yaml.safe_load(fm_text)
+                        if fm and isinstance(fm, dict):
+                            triggers = fm.get("triggers", [])
+                        # Remove frontmatter from content
                         content = parts[2].strip()
                 
-                skill = await self.load_skill(name=name, content=content, triggers=triggers, source=str(skills_dir))
+                source = str(skills_dir)
+                skill = await self.load_skill(
+                    name=name,
+                    content=content,
+                    triggers=triggers,
+                    source=source,
+                )
                 skills.append(skill)
             except Exception as e:
                 logger.warning(f"Failed to load skill {skill_file}: {e}")
@@ -321,18 +335,77 @@ class SkillLoader:
         return list(self._loaded_skills.values())
     
     def match_skills(self, message: str) -> list[Skill]:
+        """Match skills based on message content using skill.trigger."""
         matched = []
         for skill in self._loaded_skills.values():
-            for kt in skill.keyword_triggers:
-                if kt.keyword.lower() in message.lower():
-                    matched.append(skill)
-                    break
-            for tt in skill.task_triggers:
-                if any(word.lower() in message.lower() for word in tt.description.split()):
-                    if skill not in matched:
+            trigger = getattr(skill, "trigger", None)
+            if not trigger:
+                continue
+            
+            # Check KeywordTrigger keywords
+            if hasattr(trigger, "keywords"):
+                for kw in trigger.keywords:
+                    if kw.lower() in message.lower():
                         matched.append(skill)
-                    break
+                        break
+            # Check TaskTrigger
+            elif hasattr(trigger, "triggers"):
+                for t in trigger.triggers:
+                    if t.lower() in message.lower():
+                        matched.append(skill)
+                        break
         return matched
+    
+    async def load_all_skills(
+        self,
+        load_public: bool = True,
+        load_user: bool = True,
+        load_project: bool = True,
+        project_dir: str | None = None,
+        repo_root: str | None = None,
+    ) -> list[Skill]:
+        """Load all skills matching original agent_server.
+        
+        Sources:
+        - public: repo_root/skills/ (built-in)
+        - user: ~/.openhands/microagents/
+        - project: project_dir/.openhands/microagents/
+        """
+        all_skills = []
+        
+        # Get repo root - default to local file location
+        if repo_root is None:
+            # __file__ is /workspace/project/ClawHands/local_runtime.py
+            # We want /workspace/project/ClawHands
+            local_file = Path(__file__).resolve()
+            repo_root = local_file.parent
+        global_dir = Path(repo_root) / "skills"
+        
+        # Load public (built-in) skills from repo
+        if load_public and global_dir.exists():
+            logger.info(f"Loading public skills from: {global_dir}")
+            public_skills = await self.load_skills_from_directory(str(global_dir))
+            logger.info(f"Loaded {len(public_skills)} public skills from {global_dir}")
+            all_skills.extend(public_skills)
+        
+        # Load user skills
+        if load_user:
+            user_dir = Path.home() / ".openhands" / "microagents"
+            if user_dir.exists():
+                user_skills = await self.load_skills_from_directory(str(user_dir))
+                logger.info(f"Loaded {len(user_skills)} user skills")
+                all_skills.extend(user_skills)
+        
+        # Load project skills
+        if load_project and project_dir:
+            proj_dir = Path(project_dir) / ".openhands" / "microagents"
+            if proj_dir.exists():
+                proj_skills = await self.load_skills_from_directory(str(proj_dir))
+                logger.info(f"Loaded {len(proj_skills)} project skills")
+                all_skills.extend(proj_skills)
+        
+        logger.info(f"Total skills loaded: {len(all_skills)}")
+        return all_skills
 
 
 # ============================================================================
