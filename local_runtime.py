@@ -25,24 +25,16 @@ from pathlib import Path
 from typing import Any, AsyncIterator
 from uuid import uuid4
 
-# ============================================================================
-# SDK IMPORTS - REQUIRED
-# ============================================================================
-from openhands.sdk import Agent, AgentContext
+from openhands.sdk import (
+    Agent, AgentContext, 
+    TextContent as SDKTextContent,  # SDK's TextContent
+)
 from openhands.sdk.llm import LLM
 from openhands.sdk.workspace import LocalWorkspace
 from openhands.sdk.settings import AgentSettings, ConversationSettings
 from openhands.sdk.secret import StaticSecret, LookupSecret
-from openhands.sdk.context.skills import Skill, KeywordTrigger, TaskTrigger
-from openhands.sdk.context import Microagent
+from openhands.sdk.skills import Skill, KeywordTrigger, TaskTrigger
 from openhands.sdk.hooks import HookConfig
-from openhands.agent_server.models import (
-    ConversationInfo,
-    StartConversationRequest,
-    SendMessageRequest,
-    SendMessageResponse,
-    TextContent as SDKTextContent,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +64,7 @@ class DBConversation(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     user_id = Column(String, default='local')
-    metadata = Column(JSON, nullable=True)
+    meta_data = Column(JSON, nullable=True)
 
 
 class DBEvent(Base):
@@ -86,7 +78,7 @@ class DBEvent(Base):
     content = Column(Text)
     action_type = Column(String, nullable=True)
     source = Column(String, nullable=True)
-    metadata = Column(JSON, nullable=True)
+    meta_data = Column(JSON, nullable=True)
 
 
 class DBSetting(Base):
@@ -347,20 +339,29 @@ class SkillLoader:
 # MICROAGENT LOADER
 # ============================================================================
 
+# Note: Microagent class not in SDK 1.19.1 - using simplified implementation
+@dataclass
+class LocalMicroagent:
+    """Simple microagent for local runtime."""
+    name: str
+    instructions: str
+    triggers: list[str] = field(default_factory=list)
+
+
 class MicroagentLoader:
-    """Load microagents using SDK's Microagent class."""
+    """Load microagents - simplified for SDK 1.19.1."""
     
     def __init__(self, runtime: "LocalRuntime"):
         self.runtime = runtime
-        self._loaded_microagents: dict[str, Microagent] = {}
+        self._loaded_microagents: dict[str, LocalMicroagent] = {}
     
     async def load_microagent(
         self,
         name: str,
         content: str,
         triggers: list[str] | None = None,
-    ) -> Microagent:
-        microagent = Microagent(
+    ) -> LocalMicroagent:
+        microagent = LocalMicroagent(
             name=name,
             instructions=content,
             triggers=triggers or [],
@@ -369,7 +370,7 @@ class MicroagentLoader:
         logger.info(f"Loaded microagent: {name}")
         return microagent
     
-    def match_microagent(self, message: str) -> Microagent | None:
+    def match_microagent(self, message: str) -> LocalMicroagent | None:
         for ma in self._loaded_microagents.values():
             for trigger in ma.triggers:
                 if trigger.lower() in message.lower():
@@ -966,10 +967,10 @@ class LocalRuntime:
     # MICROAGENTS
     # ========================================================================
     
-    async def load_microagent(self, name: str, content: str, triggers: list[str] = None) -> Microagent:
+    async def load_microagent(self, name: str, content: str, triggers: list[str] = None) -> LocalMicroagent:
         return await self._microagent_loader.load_microagent(name, content, triggers)
     
-    def match_microagent(self, message: str) -> Microagent | None:
+    def match_microagent(self, message: str) -> LocalMicroagent | None:
         return self._microagent_loader.match_microagent(message)
     
     # ========================================================================
@@ -1038,16 +1039,27 @@ class LocalRuntime:
         llm: LLM = None,
         system_message: str = None,
     ) -> str:
+        """Create an agent using SDK.
+        
+        Note: SDK 1.19.1 requires LLM config. For testing without LLM,
+        we'll create the agent but defer full initialization.
+        """
         agent_id = str(uuid4())
         workspace = self.get_workspace(agent_id)
         
-        # Create SDK Agent
-        settings = AgentSettings(
-            llm=llm,
-            system_message=system_message or DEFAULT_SYSTEM_MESSAGE,
-            workspace=workspace,
-        )
-        sdk_agent = settings.create_agent()
+        # Create SDK Agent - requires LLM in SDK 1.19.1
+        sdk_agent = None
+        if llm:
+            settings = AgentSettings(
+                llm=llm,
+                system_message=system_message or DEFAULT_SYSTEM_MESSAGE,
+                workspace=workspace,
+            )
+            sdk_agent = settings.create_agent()
+        else:
+            # For local testing, use simple agent without LLM
+            # The agent will need an LLM to be functional
+            logger.warning(f"Agent {agent_id} created without LLM - will need LLM config for execution")
         
         self._agents[agent_id] = RunningAgent(
             id=agent_id,
