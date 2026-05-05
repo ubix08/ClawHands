@@ -343,8 +343,10 @@ class SkillLoader:
 class MicroagentLoader:
     """Load microagents using SDK's Skill class.
     
-    In SDK 1.19.1, microagents are implemented as Skills with triggers.
-    Load from .md files with YAML frontmatter.
+    SDK 1.19.1 Skill fields:
+    - name: skill name
+    - content: prompt/instructions
+    - trigger: KeywordTrigger or TaskTrigger (singular!)
     """
     
     def __init__(self, runtime: "LocalRuntime"):
@@ -364,11 +366,16 @@ class MicroagentLoader:
             content: prompt/instructions
             triggers: keywords to trigger this microagent
         """
-        # Create skill with triggers
+        # Create KeywordTrigger from triggers list
+        trigger = None
+        if triggers:
+            trigger = KeywordTrigger(keywords=triggers)
+        
+        # Create skill using SDK field names
         skill = Skill(
             name=name,
-            instructions=content,
-            triggers=triggers or [],
+            content=content,
+            trigger=trigger,
         )
         self._loaded_skills[name] = skill
         logger.info(f"Loaded microagent: {name} (triggers: {triggers})")
@@ -377,11 +384,13 @@ class MicroagentLoader:
     def match_microagent(self, message: str) -> Skill | None:
         """Match a microagent based on message content."""
         for skill in self._loaded_skills.values():
-            skill_triggers = getattr(skill, 'triggers', [])
-            if skill_triggers:
-                for trigger in skill_triggers:
-                    if trigger.lower() in message.lower():
-                        return skill
+            trigger = getattr(skill, 'trigger', None)
+            if trigger:
+                trigger_keywords = getattr(trigger, 'keywords', [])
+                if trigger_keywords:
+                    for kw in trigger_keywords:
+                        if kw.lower() in message.lower():
+                            return skill
         return None
     
     def list_microagents(self) -> list[Skill]:
