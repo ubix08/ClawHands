@@ -1345,7 +1345,6 @@ async def _run_agent_compat(
 ) -> list[Any]:
     """
     SDK 1.19.1 uses Agent.step() with LocalConversation.
-    This shim adapts to the new API.
     """
     from openhands.sdk import LocalConversation
     
@@ -1355,17 +1354,17 @@ async def _run_agent_compat(
         workspace=workspace,
     )
     
-    # Add the user message
-    conv.add_user_message(message)
+    # Add user message using send_message(message, sender)
+    conv.send_message(message, "user")
     
-    # Process with step
+    # Run agent step
     def sync_step():
         events = []
         
         def on_event(evt):
             events.append(evt)
         
-        # Call step synchronously  
+        # Call step which processes conversation
         sdk_agent.step(conv, on_event)
         return events
     
@@ -1804,40 +1803,33 @@ class LocalRuntime:
         # P5-E: ConversationRole enum
         agent.append_history(conversation_id, ConversationRole.USER, message)
 
-        # P1-A fix: inject skills via ConversationSettings.extra_context if
-        # the SDK supports it; otherwise append to system prompt, NOT user turn.
-        matched_skills = self._skills.match(message)
-        skill_context  = ""
-        if matched_skills:
-            skill_context = "\n\n".join(
-                f"[Skill: {s.name}]\n{getattr(s, 'content', '')}"
-                for s in matched_skills
-            )
-            logger.debug("Injecting %d skill(s) as extra_context", len(matched_skills))
-
         try:
+            # Get workspace for this conversation
+            workspace = self.get_workspace(agent_id, conversation_id)
+            
+            # P1-A: inject skills
+            matched_skills = self._skills.match(message)
+            skill_context  = ""
+            if matched_skills:
+                skill_context = "\n\n".join(
+                    f"[Skill: {s.name}]\n{getattr(s, 'content', '')}"
+                    for s in matched_skills
+                )
+                logger.debug("Injecting %d skill(s) as extra_context", len(matched_skills))
+
             # P1-E: build full conversation history into the context message
             context_message = agent.build_context_message(conversation_id, message)
 
-            # P1-A: prefer ConversationSettings.extra_context; never concat
-            # skill text into the user turn
-            try:
-                if skill_context:
-                    conv_settings = ConversationSettings(extra_context=skill_context)
-                    context = AgentContext(
-                        message=context_message,
-                        settings=conv_settings,
-                    )
-                else:
-                    context = AgentContext(message=context_message)
-            except TypeError:
-                # SDK version doesn't accept these kwargs; fall back gracefully.
-                # Inject skills into system-level context block if possible,
-                # but do NOT prepend to the user turn.
-                context = AgentContext(message=context_message)
-                logger.debug("ConversationSettings not supported by this SDK version")
+            # Append skill context
+            if skill_context:
+                context_message = f"{skill_context}\n\n{context_message}"
 
-            sdk_events = await _run_agent_compat(agent.sdk_agent, context)
+            # P0-F: Use SDK 1.19.1 API with workspace and message
+            sdk_events = await _run_agent_compat(
+                agent.sdk_agent, 
+                workspace, 
+                context_message
+            )
 
             last_content = ""
             for sdk_evt in sdk_events:
