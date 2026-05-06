@@ -1655,10 +1655,12 @@ class LocalRuntime:
                          conversation_id, exc)
 
     async def get_conversation(self, conv_id: str) -> dict | None:
+        logger.debug("get_conversation called with id=%s", conv_id)
         def _query(sess: Session):
             row = sess.execute(
                 select(DBConversation).where(DBConversation.id == conv_id)
             ).scalar_one_or_none()
+            logger.debug("DB query result: %s", row)
             # P0-F: Extract values INSIDE session to avoid detached instance error
             if row:
                 return {
@@ -1674,7 +1676,9 @@ class LocalRuntime:
                 }
             return None
 
-        return await self._db.run(_query)
+        result = await self._db.run(_query)
+        logger.debug("get_conversation returning: %s", result)
+        return result
 
     async def list_conversations(self, limit: int = 20) -> list[dict]:
         def _query(sess: Session):
