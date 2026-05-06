@@ -1311,7 +1311,7 @@ def _build_sdk_agent(
     kwargs: dict[str, Any] = {
         "llm":            llm,
         "workspace":      workspace,
-        "system_message": system_message,
+        "system_prompt": system_message,  # P0-F: fixed param name
         "skills":         skills or [],
     }
     if safe_hooks is not None:
@@ -1338,34 +1338,38 @@ def _build_sdk_agent(
 # SDK AGENT RUN COMPATIBILITY SHIM
 # ============================================================================
 
-async def _run_agent_compat(sdk_agent: Agent, context: AgentContext) -> list[Any]:
+async def _run_agent_compat(
+    sdk_agent: Agent,
+    workspace: LocalWorkspace,
+    message: str,
+) -> list[Any]:
     """
-    SDK Agent.run() could be either:
-      (a) an async coroutine returning a list/object
-      (b) an async generator yielding events
-    This shim handles both cases and always returns a list of events.
+    SDK 1.19.1 uses Agent.step() with LocalConversation.
+    This shim adapts to the new API.
     """
-    import inspect
-    result = sdk_agent.run(context)
-
-    if inspect.isasyncgen(result):
+    from openhands.sdk import LocalConversation
+    
+    # Create a local conversation
+    conv = LocalConversation(
+        agent=sdk_agent,
+        workspace=workspace,
+    )
+    
+    # Add the user message
+    conv.add_user_message(message)
+    
+    # Process with step
+    def sync_step():
         events = []
-        async for evt in result:
+        
+        def on_event(evt):
             events.append(evt)
+        
+        # Call step synchronously  
+        sdk_agent.step(conv, on_event)
         return events
-
-    if inspect.isawaitable(result):
-        awaited = await result
-        if isinstance(awaited, list):
-            return awaited
-        if awaited is None:
-            return []
-        return [awaited]
-
-    if hasattr(result, "__iter__"):
-        return list(result)
-
-    return []
+    
+    return await asyncio.to_thread(sync_step)
 
 
 # ============================================================================
@@ -1653,45 +1657,47 @@ class LocalRuntime:
 
     async def get_conversation(self, conv_id: str) -> dict | None:
         def _query(sess: Session):
-            return sess.execute(
+            row = sess.execute(
                 select(DBConversation).where(DBConversation.id == conv_id)
             ).scalar_one_or_none()
-
-        row = await self._db.run(_query)
-        if not row:
+            # P0-F: Extract values INSIDE session to avoid detached instance error
+            if row:
+                return {
+                    "id":                  row.id,
+                    "agent_id":            row.agent_id,
+                    "title":               row.title,
+                    "agent_type":          row.agent_type,
+                    "selected_repository": row.selected_repository,
+                    "git_provider":        row.git_provider,
+                    "selected_branch":     row.selected_branch,
+                    "created_at":          row.created_at.isoformat() if row.created_at else None,
+                    "updated_at":          row.updated_at.isoformat() if row.updated_at else None,
+                }
             return None
-        return {
-            "id":                  row.id,
-            "agent_id":            row.agent_id,
-            "title":               row.title,
-            "agent_type":          row.agent_type,
-            "selected_repository": row.selected_repository,
-            "git_provider":        row.git_provider,
-            "selected_branch":     row.selected_branch,
-            "created_at":          row.created_at.isoformat() if row.created_at else None,
-            "updated_at":          row.updated_at.isoformat() if row.updated_at else None,
-        }
+
+        return await self._db.run(_query)
 
     async def list_conversations(self, limit: int = 20) -> list[dict]:
         def _query(sess: Session):
-            return sess.execute(
+            rows = sess.execute(
                 select(DBConversation)
                 .order_by(DBConversation.updated_at.desc())
                 .limit(limit)
             ).scalars().all()
+            # P0-F: Extract values INSIDE session to avoid detached instance error
+            return [
+                {
+                    "id":         r.id,
+                    "agent_id":   r.agent_id,
+                    "title":      r.title,
+                    "agent_type": r.agent_type,
+                    "created_at": r.created_at.isoformat() if r.created_at else None,
+                    "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+                }
+                for r in rows
+            ]
 
-        rows = await self._db.run(_query)
-        return [
-            {
-                "id":         r.id,
-                "agent_id":   r.agent_id,
-                "title":      r.title,
-                "agent_type": r.agent_type,
-                "created_at": r.created_at.isoformat() if r.created_at else None,
-                "updated_at": r.updated_at.isoformat() if r.updated_at else None,
-            }
-            for r in rows
-        ]
+        return await self._db.run(_query)
 
     async def search_conversations(
         self, q: str | None = None, limit: int = 20
@@ -1708,20 +1714,21 @@ class LocalRuntime:
                     )
                 )
             stmt = stmt.limit(limit)
-            return sess.execute(stmt).scalars().all()
+            rows = sess.execute(stmt).scalars().all()
+            # P0-F: Extract values INSIDE session to avoid detached instance error
+            return [
+                {
+                    "id":         r.id,
+                    "agent_id":   r.agent_id,
+                    "title":      r.title,
+                    "agent_type": r.agent_type,
+                    "created_at": r.created_at.isoformat() if r.created_at else None,
+                    "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+                }
+                for r in rows
+            ]
 
-        rows = await self._db.run(_query)
-        return [
-            {
-                "id":         r.id,
-                "agent_id":   r.agent_id,
-                "title":      r.title,
-                "agent_type": r.agent_type,
-                "created_at": r.created_at.isoformat() if r.created_at else None,
-                "updated_at": r.updated_at.isoformat() if r.updated_at else None,
-            }
-            for r in rows
-        ]
+        return await self._db.run(_query)
 
     async def update_conversation(
         self,
