@@ -71,6 +71,10 @@ from uuid import uuid4
 import httpx          # P5-F: module-level import
 import yaml
 
+# ── Load .env file ────────────────────────────────────────────────────────
+from dotenv import load_dotenv
+load_dotenv()
+
 # ── SQLAlchemy 2.x ───────────────────────────────────────────────────────────
 from sqlalchemy import (
     Boolean, Column, DateTime, ForeignKey,
