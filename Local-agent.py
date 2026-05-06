@@ -355,10 +355,18 @@ def make_llm(
     base_url: str | None = None,
 ) -> LLM | None:
     """Construct an LLM from explicit params, falling back to env vars."""
-    model    = model    or os.environ.get("OPENHANDS_LLM_MODEL")
-    api_key  = api_key  or os.environ.get("OPENHANDS_LLM_API_KEY", "")
+    # First try explicit params / OpenHands-specific env vars
+    model = model or os.environ.get("OPENHANDS_LLM_MODEL")
+    api_key = api_key or os.environ.get("OPENHANDS_LLM_API_KEY", "")
     base_url = base_url or os.environ.get("OPENHANDS_LLM_BASE_URL")
+    
+    # Fall back to common OpenAI env vars if no OpenHands config
     if not model:
+        model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+    if not api_key:
+        api_key = os.environ.get("OPENAI_API_KEY", "")
+    
+    if not model or not api_key:
         return None
     return LLM(model=model, api_key=api_key, base_url=base_url)
 
