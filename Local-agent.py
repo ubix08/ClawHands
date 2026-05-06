@@ -1890,7 +1890,7 @@ class LocalRuntime:
                 last_content = raw_content
 
                 # P2-B: trigger post-tool hooks if applicable
-                action_name = getattr(sdk_evt, "action", None) or ""
+                action_name = str(getattr(sdk_evt, "action", "")) if getattr(sdk_evt, "action", None) else ""
                 if action_name:
                     # Pre-hook (informational; we already ran the action)
                     asyncio.ensure_future(
