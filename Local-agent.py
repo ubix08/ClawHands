@@ -988,13 +988,16 @@ class SettingsManager:
 
     async def load(self) -> None:
         def _load(sess: Session):
-            return list(sess.execute(select(DBSetting)).scalars())
-        rows = await self._db.run(_load)
-        for row in rows:
+            rows = list(sess.execute(select(DBSetting)).scalars())
+            # P0-F: Extract values INSIDE session to avoid detached instance error
+            return [{"key": row.key, "value": row.value} for row in rows]
+        
+        data = await self._db.run(_load)
+        for row in data:
             try:
-                self._data[row.key] = json.loads(row.value)
+                self._data[row["key"]] = json.loads(row["value"])
             except json.JSONDecodeError:
-                self._data[row.key] = row.value
+                self._data[row["key"]] = row["value"]
 
     def get(self, key: str, default: Any = None) -> Any:
         return self._data.get(key, default)
@@ -1040,10 +1043,13 @@ class SecretsManager:
 
     async def load(self) -> None:
         def _load(sess: Session):
-            return list(sess.execute(select(DBSecret)).scalars())
-        rows = await self._db.run(_load)
-        for row in rows:
-            self._secrets[row.name] = StaticSecret(value=row.value)
+            rows = list(sess.execute(select(DBSecret)).scalars())
+            # P0-F: Extract values INSIDE session to avoid detached instance error
+            return [{"name": row.name, "value": row.value} for row in rows]
+        
+        data = await self._db.run(_load)
+        for row in data:
+            self._secrets[row["name"]] = StaticSecret(value=row["value"])
 
     def _raw(self, name: str) -> str | None:
         secret = self._secrets.get(name)
