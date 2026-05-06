@@ -2307,16 +2307,42 @@ def create_app(runtime: LocalRuntime) -> Any:
     async def send_message(conversation_id: str, req: SendMessageRequest ) -> dict:
         text   = extract_text(req.message)
         events = []
-        async for evt in _rt().send_message(conversation_id, text):
+        try:
+            async for evt in _rt().send_message(conversation_id, text):
+                events.append(_event_to_wire_dict(
+                    event_id        = evt.id,
+                    conversation_id = evt.conversation_id,
+                    event_type      = type(evt).__name__,
+                    timestamp       = evt.timestamp.isoformat(),
+                    content         = getattr(evt, "content", ""),
+                    action_type     = getattr(evt, "action_type", ""),
+                    source          = getattr(evt, "source", ""),
+                    thought         = getattr(evt, "thought", ""),
+                ))
+        except ValueError as e:
+            # Return friendly error instead of crashing
             events.append(_event_to_wire_dict(
-                event_id        = evt.id,
-                conversation_id = evt.conversation_id,
-                event_type      = type(evt).__name__,
-                timestamp       = evt.timestamp.isoformat(),
-                content         = getattr(evt, "content", ""),
-                action_type     = getattr(evt, "action_type", ""),
-                source          = getattr(evt, "source", ""),
-                thought         = getattr(evt, "thought", ""),
+                event_id        = str(uuid4()),
+                conversation_id = conversation_id,
+                event_type      = "ObservationEvent",
+                timestamp       = _utcnow().isoformat(),
+                content         = f"[Error] {str(e)}",
+                action_type     = "",
+                source          = "runtime",
+                thought         = "",
+            ))
+        except Exception as e:
+            # Log but don't crash
+            logger.exception("Error in send_message")
+            events.append(_event_to_wire_dict(
+                event_id        = str(uuid4()),
+                conversation_id = conversation_id,
+                event_type      = "ObservationEvent",
+                timestamp       = _utcnow().isoformat(),
+                content         = f"[Server Error] {str(e)}",
+                action_type     = "",
+                source          = "runtime",
+                thought         = "",
             ))
         return {"events": events}
 
