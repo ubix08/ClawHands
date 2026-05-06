@@ -439,118 +439,132 @@ def _event_to_wire_dict(
 
 
 # ============================================================================
-# PYDANTIC REQUEST MODELS  (P2-E: promoted to module level)
+# PYDANTIC REQUEST MODELS
 # ============================================================================
+# These are defined at module level to ensure they're fully resolved before
+# FastAPI route handlers use them. The original lazy-loading approach caused
+# FastAPI to incorrectly treat request models as query parameters.
 
-# These are imported inside create_app() to avoid requiring fastapi/pydantic
-# at import time when the module is used as a library.  They are defined here
-# as module-level names so that FastAPI schema caching and test introspection
-# work correctly.
-#
-# We defer the actual `from pydantic import BaseModel` until create_app() is
-# called so the import graph stays clean.  The real definitions are created
-# once and stored as module globals on first create_app() call.
+from pydantic import BaseModel, ConfigDict
+from typing import Optional, List, Union, Any
 
-_pydantic_models_created = False
-_pydantic_ns: dict[str, Any] = {}
+class ConversationCreateRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    title: Optional[str] = None
+    agent_id: Optional[str] = None
+    agent_type: Optional[str] = "default"
+    selected_repository: Optional[str] = None
+    git_provider: Optional[str] = None
+    selected_branch: Optional[str] = None
+    initial_message: Optional[Union[str, dict]] = None
+    llm_model: Optional[str] = None
+    llm_api_key: Optional[str] = None
+    llm_base_url: Optional[str] = None
+    system_message_suffix: Optional[str] = None
+
+
+class ConversationUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    title: Optional[str] = None
+    selected_branch: Optional[str] = None
+
+
+class AgentCreateRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    name: str
+    agent_type: Optional[str] = "code"
+    llm_model: Optional[str] = None
+    llm_api_key: Optional[str] = None
+    llm_base_url: Optional[str] = None
+    system_message: Optional[str] = None
+
+
+class AgentLLMRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    llm_model: str
+    llm_api_key: Optional[str] = None
+    llm_base_url: Optional[str] = None
+
+
+class SendMessageRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    message: Union[str, dict]
+
+
+class SecretCreateRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    name: str
+    value: str
+
+
+class MCPConfigRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    name: str
+    command: str
+    args: Optional[List[str]] = None
+    env: Optional[dict] = None
+
+
+class SettingSetRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    key: str
+    value: Any
+
+
+class WebhookRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    event_type: str
+    url: str
+
+
+class APIKeyCreateRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    name: Optional[str] = "default"
+
+
+class LLMBYORRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    model: str
+    api_key: str
+    base_url: Optional[str] = None
+
+
+class AcceptTOSRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    accepted: bool = True
+
+
+class CompleteOnboardingRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+
+class SecurityPolicyRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    policy: dict
+
+
+# Pydantic model namespace - used by create_app to assign to local variables
+_pydantic_ns: dict[str, Any] = {
+    "ConversationCreateRequest": ConversationCreateRequest,
+    "ConversationUpdateRequest": ConversationUpdateRequest,
+    "AgentCreateRequest": AgentCreateRequest,
+    "AgentLLMRequest": AgentLLMRequest,
+    "SendMessageRequest": SendMessageRequest,
+    "SecretCreateRequest": SecretCreateRequest,
+    "MCPConfigRequest": MCPConfigRequest,
+    "SettingSetRequest": SettingSetRequest,
+    "WebhookRequest": WebhookRequest,
+    "APIKeyCreateRequest": APIKeyCreateRequest,
+    "LLMBYORRequest": LLMBYORRequest,
+    "AcceptTOSRequest": AcceptTOSRequest,
+    "CompleteOnboardingRequest": CompleteOnboardingRequest,
+    "SecurityPolicyRequest": SecurityPolicyRequest,
+}
 
 
 def _ensure_pydantic_models() -> None:
-    global _pydantic_models_created
-    if _pydantic_models_created:
-        return
-    from pydantic import BaseModel
-    from typing import Optional, List, Union
-
-    class ConversationCreateRequest(BaseModel):
-        title:                 Optional[str]            = None
-        agent_id:              Optional[str]            = None
-        agent_type:            Optional[str]            = "default"
-        selected_repository:   Optional[str]            = None
-        git_provider:          Optional[str]            = None
-        selected_branch:       Optional[str]            = None
-        initial_message:       Optional[Union[str, dict]] = None
-        llm_model:             Optional[str]            = None
-        llm_api_key:           Optional[str]            = None
-        llm_base_url:          Optional[str]            = None
-        system_message_suffix: Optional[str]            = None
-
-    class ConversationUpdateRequest(BaseModel):
-        title:           Optional[str] = None
-        selected_branch: Optional[str] = None
-
-    class AgentCreateRequest(BaseModel):
-        name:           str
-        agent_type:     Optional[str] = "code"
-        llm_model:      Optional[str] = None
-        llm_api_key:    Optional[str] = None
-        llm_base_url:   Optional[str] = None
-        system_message: Optional[str] = None
-
-    class AgentLLMRequest(BaseModel):
-        llm_model:    str
-        llm_api_key:  Optional[str] = None
-        llm_base_url: Optional[str] = None
-
-    class SendMessageRequest(BaseModel):
-        message: Union[str, dict]
-
-    class SecretCreateRequest(BaseModel):
-        name:  str
-        value: str
-
-    class MCPConfigRequest(BaseModel):
-        name:    str
-        command: str
-        args:    Optional[List[str]] = None
-        env:     Optional[dict]      = None
-
-    class SettingSetRequest(BaseModel):
-        key:   str
-        value: Any
-
-    class WebhookRequest(BaseModel):
-        event_type: str
-        url:        str
-
-    class APIKeyCreateRequest(BaseModel):
-        name: Optional[str] = "default"
-
-    class LLMBYORRequest(BaseModel):
-        """
-        P5-A: 'BYOR' here means 'Bring Your Own [API key / LLM credentials]',
-        matching the OpenHands usage (not 'Bring Your Own Runtime').
-        """
-        model:    str
-        api_key:  str
-        base_url: Optional[str] = None
-
-    class AcceptTOSRequest(BaseModel):
-        accepted: bool = True
-
-    class CompleteOnboardingRequest(BaseModel):
-        pass
-
-    class SecurityPolicyRequest(BaseModel):
-        policy: dict
-
-    _pydantic_ns.update({
-        "ConversationCreateRequest":  ConversationCreateRequest,
-        "ConversationUpdateRequest":  ConversationUpdateRequest,
-        "AgentCreateRequest":         AgentCreateRequest,
-        "AgentLLMRequest":            AgentLLMRequest,
-        "SendMessageRequest":         SendMessageRequest,
-        "SecretCreateRequest":        SecretCreateRequest,
-        "MCPConfigRequest":           MCPConfigRequest,
-        "SettingSetRequest":          SettingSetRequest,
-        "WebhookRequest":             WebhookRequest,
-        "APIKeyCreateRequest":        APIKeyCreateRequest,
-        "LLMBYORRequest":             LLMBYORRequest,
-        "AcceptTOSRequest":           AcceptTOSRequest,
-        "CompleteOnboardingRequest":  CompleteOnboardingRequest,
-        "SecurityPolicyRequest":      SecurityPolicyRequest,
-    })
-    _pydantic_models_created = True
+    """No-op - models are now defined at module level."""
+    pass
 
 
 # ============================================================================
@@ -1968,7 +1982,7 @@ def create_app(runtime: LocalRuntime) -> Any:
     from fastapi import (
         FastAPI, APIRouter, HTTPException, Query,
         WebSocket, WebSocketDisconnect,
-        Response,
+        Response, Body,
     )
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import StreamingResponse, JSONResponse, PlainTextResponse
@@ -2076,7 +2090,7 @@ def create_app(runtime: LocalRuntime) -> Any:
         }
 
     @agent_router.post("/{agent_id}/llm")
-    async def configure_llm(agent_id: str, req: AgentLLMRequest) -> dict:
+    async def configure_llm(agent_id: str, req: AgentLLMRequest ) -> dict:
         llm = make_llm(req.llm_model, req.llm_api_key, req.llm_base_url)
         if not llm:
             raise HTTPException(400, "llm_model is required")
@@ -2107,7 +2121,7 @@ def create_app(runtime: LocalRuntime) -> Any:
         return {"items": convs, "total": len(convs)}
 
     @conv_router.post("", status_code=201)   # P3-F
-    async def create_conversation(req: ConversationCreateRequest) -> dict:
+    async def create_conversation(req: ConversationCreateRequest ) -> dict:
         rt = _rt()
 
         if req.agent_id:
@@ -2198,7 +2212,7 @@ def create_app(runtime: LocalRuntime) -> Any:
 
     @conv_router.patch("/{conversation_id}")
     async def update_conversation(
-        conversation_id: str, req: ConversationUpdateRequest
+        conversation_id: str, req: ConversationUpdateRequest 
     ) -> dict:
         ok = await _rt().update_conversation(
             conv_id=conversation_id,
@@ -2219,7 +2233,7 @@ def create_app(runtime: LocalRuntime) -> Any:
     # ── send message (REST) ───────────────────────────────────────────────
 
     @conv_router.post("/{conversation_id}/send-message")
-    async def send_message(conversation_id: str, req: SendMessageRequest) -> dict:
+    async def send_message(conversation_id: str, req: SendMessageRequest ) -> dict:
         text   = extract_text(req.message)
         events = []
         async for evt in _rt().send_message(conversation_id, text):
@@ -2448,7 +2462,7 @@ def create_app(runtime: LocalRuntime) -> Any:
         return _rt().settings.all
 
     @settings_router.post("")
-    async def set_setting(req: SettingSetRequest) -> dict:
+    async def set_setting(req: SettingSetRequest ) -> dict:
         await _rt().settings.set(req.key, req.value)
         return {"success": True}
 
@@ -2468,7 +2482,7 @@ def create_app(runtime: LocalRuntime) -> Any:
         return {"secrets": _rt().list_secrets()}
 
     @secrets_router.post("", status_code=201)   # P3-F
-    async def create_secret(req: SecretCreateRequest) -> dict:
+    async def create_secret(req: SecretCreateRequest ) -> dict:
         await _rt().set_secret(req.name, req.value)
         return {"success": True}
 
@@ -2581,7 +2595,7 @@ def create_app(runtime: LocalRuntime) -> Any:
         }
 
     @mcp_router.post("", status_code=201)   # P3-F
-    async def add_mcp(req: MCPConfigRequest) -> dict:
+    async def add_mcp(req: MCPConfigRequest ) -> dict:
         sid = await _rt().add_mcp_server(req.name, req.command, req.args, req.env)
         return {"server_id": sid}
 
@@ -2632,7 +2646,7 @@ def create_app(runtime: LocalRuntime) -> Any:
         }
 
     @webhook_router.post("")
-    async def register_webhook(req: WebhookRequest) -> dict:
+    async def register_webhook(req: WebhookRequest ) -> dict:
         _rt().register_webhook(req.event_type, req.url)
         return {"success": True}
 
@@ -2678,7 +2692,7 @@ def create_app(runtime: LocalRuntime) -> Any:
         }
 
     @api_router.post("/keys", status_code=201)   # P3-F
-    async def create_api_key(req: APIKeyCreateRequest) -> dict:
+    async def create_api_key(req: APIKeyCreateRequest ) -> dict:
         import secrets as _secrets
         kid   = str(uuid4())
         token = _secrets.token_urlsafe(32)
@@ -2699,7 +2713,7 @@ def create_app(runtime: LocalRuntime) -> Any:
     # ── /api/llm/configure  (P3-D: moved from /api/keys/llm/byor) ─────────
 
     @api_router.post("/llm/configure")
-    async def configure_byor_llm(req: LLMBYORRequest) -> dict:
+    async def configure_byor_llm(req: LLMBYORRequest ) -> dict:
         """
         Configure a 'Bring Your Own [API key]' LLM.
         Stores credentials as a runtime setting and configures any agents
@@ -2738,7 +2752,7 @@ def create_app(runtime: LocalRuntime) -> Any:
     # ── /api/accept_tos ───────────────────────────────────────────────────
 
     @api_router.post("/accept_tos")
-    async def accept_tos(req: AcceptTOSRequest) -> dict:
+    async def accept_tos(req: AcceptTOSRequest ) -> dict:
         # P0-F: app.state, not closure variable
         app.state.tos_accepted = req.accepted
         await _rt().settings.set("tos_accepted", req.accepted)
@@ -2747,7 +2761,7 @@ def create_app(runtime: LocalRuntime) -> Any:
     # ── /api/complete_onboarding ──────────────────────────────────────────
 
     @api_router.post("/complete_onboarding")
-    async def complete_onboarding(req: CompleteOnboardingRequest) -> dict:
+    async def complete_onboarding(req: CompleteOnboardingRequest ) -> dict:
         app.state.onboarding_complete = True
         await _rt().settings.set("onboarding_complete", True)
         return {"success": True}
