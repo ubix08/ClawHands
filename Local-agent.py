@@ -76,8 +76,9 @@ from sqlalchemy import (
     Boolean, Column, DateTime, ForeignKey,
     Integer, JSON, String, Text,
     create_engine, select, delete, update,
-    func, or_,
+    func, or_, text,
 )
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker, relationship
 from sqlalchemy.pool import StaticPool
 
@@ -187,6 +188,20 @@ class DatabaseManager:
             poolclass=StaticPool,
         )
         Base.metadata.create_all(self.engine)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """Run migrations to add new columns to existing tables."""
+        with self.engine.connect() as conn:
+            # Add thought column to events table if missing
+            try:
+                conn.execute(text("SELECT thought FROM events LIMIT 1"))
+            except OperationalError:
+                conn.execute(text("ALTER TABLE events ADD COLUMN thought TEXT"))
+                conn.commit()
+            except Exception:
+                pass
+
         self._SessionLocal = sessionmaker(
             bind=self.engine, autocommit=False, autoflush=False
         )
