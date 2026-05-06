@@ -1358,10 +1358,13 @@ def _build_sdk_agent(
             except Exception:
                 safe_hooks = None
 
+    from openhands.tools import get_default_tools
+    
     kwargs: dict[str, Any] = {
         "llm":            llm,
         "workspace":      workspace,
         "system_prompt": system_message,  # P0-F: fixed param name
+        "tools":         get_default_tools(),  # P1-F: explicitly pass default tools
         "skills":         skills or [],
     }
     if safe_hooks is not None:
