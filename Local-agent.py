@@ -353,6 +353,7 @@ def make_llm(
     model:    str | None = None,
     api_key:  str | None = None,
     base_url: str | None = None,
+    thinking: bool = True,
 ) -> LLM | None:
     """Construct an LLM from explicit params, falling back to env vars."""
     # First try explicit params / OpenHands-specific env vars
@@ -368,7 +369,13 @@ def make_llm(
     
     if not model or not api_key:
         return None
-    return LLM(model=model, api_key=api_key, base_url=base_url)
+    
+    # Build extra_body for thinking (Z-ai, Claude, etc.)
+    extra_body = {}
+    if thinking:
+        extra_body = {"chat_template_kwargs": {"enable_thinking": True, "clear_thinking": False}}
+    
+    return LLM(model=model, api_key=api_key, base_url=base_url, litellm_extra_body=extra_body)
 
 
 # ============================================================================
