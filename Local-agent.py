@@ -1885,8 +1885,8 @@ class LocalRuntime:
             last_content = ""
             for sdk_evt in sdk_events:
                 # P0-B: extract actual content from typed SDK event
-                raw_content = _extract_sdk_content(sdk_evt)
-                raw_thought = _extract_sdk_thought(sdk_evt)
+                raw_content = str(_extract_sdk_content(sdk_evt))
+                raw_thought = str(_extract_sdk_thought(sdk_evt))
                 last_content = raw_content
 
                 # P2-B: trigger post-tool hooks if applicable
@@ -1907,7 +1907,7 @@ class LocalRuntime:
                     content=raw_content,
                     action_type=action_name or None,
                     source="agent",
-                    thought=raw_thought or None,
+                    thought=str(raw_thought) if raw_thought else None,
                 )
 
                 if action_name:
