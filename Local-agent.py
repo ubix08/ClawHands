@@ -1192,20 +1192,35 @@ class EventStore:
             if since:
                 stmt = stmt.where(DBEvent.timestamp > since)
             stmt = stmt.order_by(DBEvent.timestamp).limit(limit)
-            return sess.execute(stmt).scalars().all()
+            rows = sess.execute(stmt).scalars().all()
+            # Extract values INSIDE session to avoid DetachedInstanceError
+            return [
+                {
+                    "id": r.id,
+                    "conversation_id": r.conversation_id,
+                    "event_type": r.event_type,
+                    "timestamp": r.timestamp,
+                    "content": r.content,
+                    "action_type": r.action_type,
+                    "source": r.source,
+                    "thought": r.thought,
+                    "meta_data": r.meta_data,
+                }
+                for r in rows
+            ]
 
+        # Now extract to dicts AFTER session closes
         rows = await self._db.run(_query)
-        # P4-B: use unified serialiser so history replay == live event format
         return [
             _event_to_wire_dict(
-                event_id        = r.id,
-                conversation_id = r.conversation_id,
-                event_type      = r.event_type,
-                timestamp       = r.timestamp.isoformat() if r.timestamp else "",
-                content         = r.content or "",
-                action_type     = r.action_type or "",
-                source          = r.source or "",
-                thought         = r.thought or "",
+                event_id        = r["id"],
+                conversation_id = r["conversation_id"],
+                event_type      = r["event_type"],
+                timestamp       = r["timestamp"].isoformat() if r["timestamp"] else "",
+                content         = r["content"] or "",
+                action_type     = r["action_type"] or "",
+                source          = r["source"] or "",
+                thought         = r["thought"] or "",
             )
             for r in rows
         ]
