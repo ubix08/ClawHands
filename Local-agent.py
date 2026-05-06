@@ -366,6 +366,13 @@ def make_llm(
         model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
     if not api_key:
         api_key = os.environ.get("OPENAI_API_KEY", "")
+    if not base_url:
+        base_url = os.environ.get("OPENAI_BASE_URL")
+    
+    # Map custom models to openai-compatible endpoints
+    if model and base_url and "nvidia" in base_url.lower():
+        # Z-ai, Deepseek, etc on NVIDIA Use openai-compatible format
+        model = f"openai/{model}"
     
     if not model or not api_key:
         return None
