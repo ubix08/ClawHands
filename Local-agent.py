@@ -1375,11 +1375,13 @@ def _build_sdk_agent(
 
     from openhands.tools import get_default_tools
     
+    # Filter out browser_tool_set (requires Chromium not installed)
+    all_tools = get_default_tools()
     kwargs: dict[str, Any] = {
         "llm":            llm,
         "workspace":      workspace,
         "system_prompt": system_message,  # P0-F: fixed param name
-        "tools":         get_default_tools(),  # P1-F: explicitly pass default tools
+        "tools":         [t for t in all_tools if t.name != "browser_tool_set"],  # Exclude browser
         "skills":         skills or [],
     }
     if safe_hooks is not None:
