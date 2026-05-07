@@ -71,13 +71,18 @@ from uuid import uuid4
 import httpx          # P5-F: module-level import
 import yaml
 
+# ── Load .env file ────────────────────────────────────────────────────────
+from dotenv import load_dotenv
+load_dotenv()
+
 # ── SQLAlchemy 2.x ───────────────────────────────────────────────────────────
 from sqlalchemy import (
     Boolean, Column, DateTime, ForeignKey,
     Integer, JSON, String, Text,
     create_engine, select, delete, update,
-    func, or_,
+    func, or_, text,
 )
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker, relationship
 from sqlalchemy.pool import StaticPool
 
@@ -187,6 +192,20 @@ class DatabaseManager:
             poolclass=StaticPool,
         )
         Base.metadata.create_all(self.engine)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """Run migrations to add new columns to existing tables."""
+        with self.engine.connect() as conn:
+            # Add thought column to events table if missing
+            try:
+                conn.execute(text("SELECT thought FROM events LIMIT 1"))
+            except OperationalError:
+                conn.execute(text("ALTER TABLE events ADD COLUMN thought TEXT"))
+                conn.commit()
+            except Exception:
+                pass
+
         self._SessionLocal = sessionmaker(
             bind=self.engine, autocommit=False, autoflush=False
         )
@@ -310,20 +329,23 @@ After you finalize the plan in PLAN.md:
 Your role ends when the plan is finalized. Implementation is handled by the code agent.
 </IMPORTANT_PLANNING_BOUNDARIES>"""
 
-DEFAULT_SYSTEM_MESSAGE = """You are an AI software development agent. You operate in a workflow
-that allows you to interact with a file system, run commands, and browse the web.
+DEFAULT_SYSTEM_MESSAGE = """You are an AI software development agent. You operate in a workflow that allows you to interact with a file system, run commands, and browse the web.
 
 Capabilities:
-- Read, write, and execute files
-- Run shell commands
-- Browse websites and interact with web pages
-- Use tools to accomplish your tasks
+- Read, write, and execute files using the file_editor or bash tools
+- Run shell commands using the bash tool
+- Browse websites using the browser tool
+
+IMPORTANT:
+- NEVER use the 'think' tool - it only logs thoughts and does NOT execute actions
+- ALWAYS use bash, file_editor, or browser tools to accomplish tasks
+- The think tool does NOT create files or run commands - it only logs thoughts
 
 Guidelines:
-- Write clean, efficient code
+- Use 'bash' tool to run shell commands (e.g., echo, python, etc.)
+- Use 'file_editor' tool to read/write files
 - Test your solutions
-- Stay within the user's constraints
-- Ask for clarification when needed"""
+- Stay within the user's constraints"""
 
 
 # ============================================================================
@@ -334,14 +356,36 @@ def make_llm(
     model:    str | None = None,
     api_key:  str | None = None,
     base_url: str | None = None,
+    thinking: bool = True,
 ) -> LLM | None:
     """Construct an LLM from explicit params, falling back to env vars."""
-    model    = model    or os.environ.get("OPENHANDS_LLM_MODEL")
-    api_key  = api_key  or os.environ.get("OPENHANDS_LLM_API_KEY", "")
+    # First try explicit params / OpenHands-specific env vars
+    model = model or os.environ.get("OPENHANDS_LLM_MODEL")
+    api_key = api_key or os.environ.get("OPENHANDS_LLM_API_KEY", "")
     base_url = base_url or os.environ.get("OPENHANDS_LLM_BASE_URL")
+    
+    # Fall back to common OpenAI env vars if no OpenHands config
     if not model:
+        model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+    if not api_key:
+        api_key = os.environ.get("OPENAI_API_KEY", "")
+    if not base_url:
+        base_url = os.environ.get("OPENAI_BASE_URL")
+    
+    # Map custom models to openai-compatible endpoints
+    if model and base_url and "nvidia" in base_url.lower():
+        # Z-ai, Deepseek, etc on NVIDIA Use openai-compatible format
+        model = f"openai/{model}"
+    
+    if not model or not api_key:
         return None
-    return LLM(model=model, api_key=api_key, base_url=base_url)
+    
+    # Build extra_body for thinking (Z-ai, Claude, etc.)
+    extra_body = {}
+    if thinking:
+        extra_body = {"chat_template_kwargs": {"enable_thinking": True, "clear_thinking": False}}
+    
+    return LLM(model=model, api_key=api_key, base_url=base_url, litellm_extra_body=extra_body)
 
 
 # ============================================================================
@@ -439,118 +483,132 @@ def _event_to_wire_dict(
 
 
 # ============================================================================
-# PYDANTIC REQUEST MODELS  (P2-E: promoted to module level)
+# PYDANTIC REQUEST MODELS
 # ============================================================================
+# These are defined at module level to ensure they're fully resolved before
+# FastAPI route handlers use them. The original lazy-loading approach caused
+# FastAPI to incorrectly treat request models as query parameters.
 
-# These are imported inside create_app() to avoid requiring fastapi/pydantic
-# at import time when the module is used as a library.  They are defined here
-# as module-level names so that FastAPI schema caching and test introspection
-# work correctly.
-#
-# We defer the actual `from pydantic import BaseModel` until create_app() is
-# called so the import graph stays clean.  The real definitions are created
-# once and stored as module globals on first create_app() call.
+from pydantic import BaseModel, ConfigDict
+from typing import Optional, List, Union, Any
 
-_pydantic_models_created = False
-_pydantic_ns: dict[str, Any] = {}
+class ConversationCreateRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    title: Optional[str] = None
+    agent_id: Optional[str] = None
+    agent_type: Optional[str] = "default"
+    selected_repository: Optional[str] = None
+    git_provider: Optional[str] = None
+    selected_branch: Optional[str] = None
+    initial_message: Optional[Union[str, dict]] = None
+    llm_model: Optional[str] = None
+    llm_api_key: Optional[str] = None
+    llm_base_url: Optional[str] = None
+    system_message_suffix: Optional[str] = None
+
+
+class ConversationUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    title: Optional[str] = None
+    selected_branch: Optional[str] = None
+
+
+class AgentCreateRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    name: str
+    agent_type: Optional[str] = "code"
+    llm_model: Optional[str] = None
+    llm_api_key: Optional[str] = None
+    llm_base_url: Optional[str] = None
+    system_message: Optional[str] = None
+
+
+class AgentLLMRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    llm_model: str
+    llm_api_key: Optional[str] = None
+    llm_base_url: Optional[str] = None
+
+
+class SendMessageRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    message: Union[str, dict]
+
+
+class SecretCreateRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    name: str
+    value: str
+
+
+class MCPConfigRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    name: str
+    command: str
+    args: Optional[List[str]] = None
+    env: Optional[dict] = None
+
+
+class SettingSetRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    key: str
+    value: Any
+
+
+class WebhookRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    event_type: str
+    url: str
+
+
+class APIKeyCreateRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    name: Optional[str] = "default"
+
+
+class LLMBYORRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    model: str
+    api_key: str
+    base_url: Optional[str] = None
+
+
+class AcceptTOSRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    accepted: bool = True
+
+
+class CompleteOnboardingRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+
+class SecurityPolicyRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    policy: dict
+
+
+# Pydantic model namespace - used by create_app to assign to local variables
+_pydantic_ns: dict[str, Any] = {
+    "ConversationCreateRequest": ConversationCreateRequest,
+    "ConversationUpdateRequest": ConversationUpdateRequest,
+    "AgentCreateRequest": AgentCreateRequest,
+    "AgentLLMRequest": AgentLLMRequest,
+    "SendMessageRequest": SendMessageRequest,
+    "SecretCreateRequest": SecretCreateRequest,
+    "MCPConfigRequest": MCPConfigRequest,
+    "SettingSetRequest": SettingSetRequest,
+    "WebhookRequest": WebhookRequest,
+    "APIKeyCreateRequest": APIKeyCreateRequest,
+    "LLMBYORRequest": LLMBYORRequest,
+    "AcceptTOSRequest": AcceptTOSRequest,
+    "CompleteOnboardingRequest": CompleteOnboardingRequest,
+    "SecurityPolicyRequest": SecurityPolicyRequest,
+}
 
 
 def _ensure_pydantic_models() -> None:
-    global _pydantic_models_created
-    if _pydantic_models_created:
-        return
-    from pydantic import BaseModel
-    from typing import Optional, List, Union
-
-    class ConversationCreateRequest(BaseModel):
-        title:                 Optional[str]            = None
-        agent_id:              Optional[str]            = None
-        agent_type:            Optional[str]            = "default"
-        selected_repository:   Optional[str]            = None
-        git_provider:          Optional[str]            = None
-        selected_branch:       Optional[str]            = None
-        initial_message:       Optional[Union[str, dict]] = None
-        llm_model:             Optional[str]            = None
-        llm_api_key:           Optional[str]            = None
-        llm_base_url:          Optional[str]            = None
-        system_message_suffix: Optional[str]            = None
-
-    class ConversationUpdateRequest(BaseModel):
-        title:           Optional[str] = None
-        selected_branch: Optional[str] = None
-
-    class AgentCreateRequest(BaseModel):
-        name:           str
-        agent_type:     Optional[str] = "code"
-        llm_model:      Optional[str] = None
-        llm_api_key:    Optional[str] = None
-        llm_base_url:   Optional[str] = None
-        system_message: Optional[str] = None
-
-    class AgentLLMRequest(BaseModel):
-        llm_model:    str
-        llm_api_key:  Optional[str] = None
-        llm_base_url: Optional[str] = None
-
-    class SendMessageRequest(BaseModel):
-        message: Union[str, dict]
-
-    class SecretCreateRequest(BaseModel):
-        name:  str
-        value: str
-
-    class MCPConfigRequest(BaseModel):
-        name:    str
-        command: str
-        args:    Optional[List[str]] = None
-        env:     Optional[dict]      = None
-
-    class SettingSetRequest(BaseModel):
-        key:   str
-        value: Any
-
-    class WebhookRequest(BaseModel):
-        event_type: str
-        url:        str
-
-    class APIKeyCreateRequest(BaseModel):
-        name: Optional[str] = "default"
-
-    class LLMBYORRequest(BaseModel):
-        """
-        P5-A: 'BYOR' here means 'Bring Your Own [API key / LLM credentials]',
-        matching the OpenHands usage (not 'Bring Your Own Runtime').
-        """
-        model:    str
-        api_key:  str
-        base_url: Optional[str] = None
-
-    class AcceptTOSRequest(BaseModel):
-        accepted: bool = True
-
-    class CompleteOnboardingRequest(BaseModel):
-        pass
-
-    class SecurityPolicyRequest(BaseModel):
-        policy: dict
-
-    _pydantic_ns.update({
-        "ConversationCreateRequest":  ConversationCreateRequest,
-        "ConversationUpdateRequest":  ConversationUpdateRequest,
-        "AgentCreateRequest":         AgentCreateRequest,
-        "AgentLLMRequest":            AgentLLMRequest,
-        "SendMessageRequest":         SendMessageRequest,
-        "SecretCreateRequest":        SecretCreateRequest,
-        "MCPConfigRequest":           MCPConfigRequest,
-        "SettingSetRequest":          SettingSetRequest,
-        "WebhookRequest":             WebhookRequest,
-        "APIKeyCreateRequest":        APIKeyCreateRequest,
-        "LLMBYORRequest":             LLMBYORRequest,
-        "AcceptTOSRequest":           AcceptTOSRequest,
-        "CompleteOnboardingRequest":  CompleteOnboardingRequest,
-        "SecurityPolicyRequest":      SecurityPolicyRequest,
-    })
-    _pydantic_models_created = True
+    """No-op - models are now defined at module level."""
+    pass
 
 
 # ============================================================================
@@ -974,13 +1032,16 @@ class SettingsManager:
 
     async def load(self) -> None:
         def _load(sess: Session):
-            return list(sess.execute(select(DBSetting)).scalars())
-        rows = await self._db.run(_load)
-        for row in rows:
+            rows = list(sess.execute(select(DBSetting)).scalars())
+            # P0-F: Extract values INSIDE session to avoid detached instance error
+            return [{"key": row.key, "value": row.value} for row in rows]
+        
+        data = await self._db.run(_load)
+        for row in data:
             try:
-                self._data[row.key] = json.loads(row.value)
+                self._data[row["key"]] = json.loads(row["value"])
             except json.JSONDecodeError:
-                self._data[row.key] = row.value
+                self._data[row["key"]] = row["value"]
 
     def get(self, key: str, default: Any = None) -> Any:
         return self._data.get(key, default)
@@ -1026,10 +1087,13 @@ class SecretsManager:
 
     async def load(self) -> None:
         def _load(sess: Session):
-            return list(sess.execute(select(DBSecret)).scalars())
-        rows = await self._db.run(_load)
-        for row in rows:
-            self._secrets[row.name] = StaticSecret(value=row.value)
+            rows = list(sess.execute(select(DBSecret)).scalars())
+            # P0-F: Extract values INSIDE session to avoid detached instance error
+            return [{"name": row.name, "value": row.value} for row in rows]
+        
+        data = await self._db.run(_load)
+        for row in data:
+            self._secrets[row["name"]] = StaticSecret(value=row["value"])
 
     def _raw(self, name: str) -> str | None:
         secret = self._secrets.get(name)
@@ -1128,20 +1192,35 @@ class EventStore:
             if since:
                 stmt = stmt.where(DBEvent.timestamp > since)
             stmt = stmt.order_by(DBEvent.timestamp).limit(limit)
-            return sess.execute(stmt).scalars().all()
+            rows = sess.execute(stmt).scalars().all()
+            # Extract values INSIDE session to avoid DetachedInstanceError
+            return [
+                {
+                    "id": r.id,
+                    "conversation_id": r.conversation_id,
+                    "event_type": r.event_type,
+                    "timestamp": r.timestamp,
+                    "content": r.content,
+                    "action_type": r.action_type,
+                    "source": r.source,
+                    "thought": r.thought,
+                    "meta_data": r.meta_data,
+                }
+                for r in rows
+            ]
 
+        # Now extract to dicts AFTER session closes
         rows = await self._db.run(_query)
-        # P4-B: use unified serialiser so history replay == live event format
         return [
             _event_to_wire_dict(
-                event_id        = r.id,
-                conversation_id = r.conversation_id,
-                event_type      = r.event_type,
-                timestamp       = r.timestamp.isoformat() if r.timestamp else "",
-                content         = r.content or "",
-                action_type     = r.action_type or "",
-                source          = r.source or "",
-                thought         = r.thought or "",
+                event_id        = r["id"],
+                conversation_id = r["conversation_id"],
+                event_type      = r["event_type"],
+                timestamp       = r["timestamp"].isoformat() if r["timestamp"] else "",
+                content         = r["content"] or "",
+                action_type     = r["action_type"] or "",
+                source          = r["source"] or "",
+                thought         = r["thought"] or "",
             )
             for r in rows
         ]
@@ -1294,10 +1373,15 @@ def _build_sdk_agent(
             except Exception:
                 safe_hooks = None
 
+    from openhands.tools import get_default_tools
+    
+    # Filter out browser_tool_set (requires Chromium not installed)
+    all_tools = get_default_tools()
     kwargs: dict[str, Any] = {
         "llm":            llm,
         "workspace":      workspace,
-        "system_message": system_message,
+        "system_prompt": system_message,  # P0-F: fixed param name
+        "tools":         [t for t in all_tools if t.name != "browser_tool_set"],  # Exclude browser
         "skills":         skills or [],
     }
     if safe_hooks is not None:
@@ -1324,34 +1408,37 @@ def _build_sdk_agent(
 # SDK AGENT RUN COMPATIBILITY SHIM
 # ============================================================================
 
-async def _run_agent_compat(sdk_agent: Agent, context: AgentContext) -> list[Any]:
+async def _run_agent_compat(
+    sdk_agent: Agent,
+    workspace: LocalWorkspace,
+    message: str,
+) -> list[Any]:
     """
-    SDK Agent.run() could be either:
-      (a) an async coroutine returning a list/object
-      (b) an async generator yielding events
-    This shim handles both cases and always returns a list of events.
+    SDK 1.19.1 uses Agent.step() with LocalConversation.
     """
-    import inspect
-    result = sdk_agent.run(context)
-
-    if inspect.isasyncgen(result):
+    from openhands.sdk import LocalConversation
+    
+    # Create a local conversation
+    conv = LocalConversation(
+        agent=sdk_agent,
+        workspace=workspace,
+    )
+    
+    # Add user message using send_message(message, sender)
+    conv.send_message(message, "user")
+    
+    # Run agent step
+    def sync_step():
         events = []
-        async for evt in result:
+        
+        def on_event(evt):
             events.append(evt)
+        
+        # Call step which processes conversation
+        sdk_agent.step(conv, on_event)
         return events
-
-    if inspect.isawaitable(result):
-        awaited = await result
-        if isinstance(awaited, list):
-            return awaited
-        if awaited is None:
-            return []
-        return [awaited]
-
-    if hasattr(result, "__iter__"):
-        return list(result)
-
-    return []
+    
+    return await asyncio.to_thread(sync_step)
 
 
 # ============================================================================
@@ -1638,46 +1725,52 @@ class LocalRuntime:
                          conversation_id, exc)
 
     async def get_conversation(self, conv_id: str) -> dict | None:
+        logger.debug("get_conversation called with id=%s", conv_id)
         def _query(sess: Session):
-            return sess.execute(
+            row = sess.execute(
                 select(DBConversation).where(DBConversation.id == conv_id)
             ).scalar_one_or_none()
-
-        row = await self._db.run(_query)
-        if not row:
+            logger.debug("DB query result: %s", row)
+            # P0-F: Extract values INSIDE session to avoid detached instance error
+            if row:
+                return {
+                    "id":                  row.id,
+                    "agent_id":            row.agent_id,
+                    "title":               row.title,
+                    "agent_type":          row.agent_type,
+                    "selected_repository": row.selected_repository,
+                    "git_provider":        row.git_provider,
+                    "selected_branch":     row.selected_branch,
+                    "created_at":          row.created_at.isoformat() if row.created_at else None,
+                    "updated_at":          row.updated_at.isoformat() if row.updated_at else None,
+                }
             return None
-        return {
-            "id":                  row.id,
-            "agent_id":            row.agent_id,
-            "title":               row.title,
-            "agent_type":          row.agent_type,
-            "selected_repository": row.selected_repository,
-            "git_provider":        row.git_provider,
-            "selected_branch":     row.selected_branch,
-            "created_at":          row.created_at.isoformat() if row.created_at else None,
-            "updated_at":          row.updated_at.isoformat() if row.updated_at else None,
-        }
+
+        result = await self._db.run(_query)
+        logger.debug("get_conversation returning: %s", result)
+        return result
 
     async def list_conversations(self, limit: int = 20) -> list[dict]:
         def _query(sess: Session):
-            return sess.execute(
+            rows = sess.execute(
                 select(DBConversation)
                 .order_by(DBConversation.updated_at.desc())
                 .limit(limit)
             ).scalars().all()
+            # P0-F: Extract values INSIDE session to avoid detached instance error
+            return [
+                {
+                    "id":         r.id,
+                    "agent_id":   r.agent_id,
+                    "title":      r.title,
+                    "agent_type": r.agent_type,
+                    "created_at": r.created_at.isoformat() if r.created_at else None,
+                    "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+                }
+                for r in rows
+            ]
 
-        rows = await self._db.run(_query)
-        return [
-            {
-                "id":         r.id,
-                "agent_id":   r.agent_id,
-                "title":      r.title,
-                "agent_type": r.agent_type,
-                "created_at": r.created_at.isoformat() if r.created_at else None,
-                "updated_at": r.updated_at.isoformat() if r.updated_at else None,
-            }
-            for r in rows
-        ]
+        return await self._db.run(_query)
 
     async def search_conversations(
         self, q: str | None = None, limit: int = 20
@@ -1694,20 +1787,21 @@ class LocalRuntime:
                     )
                 )
             stmt = stmt.limit(limit)
-            return sess.execute(stmt).scalars().all()
+            rows = sess.execute(stmt).scalars().all()
+            # P0-F: Extract values INSIDE session to avoid detached instance error
+            return [
+                {
+                    "id":         r.id,
+                    "agent_id":   r.agent_id,
+                    "title":      r.title,
+                    "agent_type": r.agent_type,
+                    "created_at": r.created_at.isoformat() if r.created_at else None,
+                    "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+                }
+                for r in rows
+            ]
 
-        rows = await self._db.run(_query)
-        return [
-            {
-                "id":         r.id,
-                "agent_id":   r.agent_id,
-                "title":      r.title,
-                "agent_type": r.agent_type,
-                "created_at": r.created_at.isoformat() if r.created_at else None,
-                "updated_at": r.updated_at.isoformat() if r.updated_at else None,
-            }
-            for r in rows
-        ]
+        return await self._db.run(_query)
 
     async def update_conversation(
         self,
@@ -1783,50 +1877,43 @@ class LocalRuntime:
         # P5-E: ConversationRole enum
         agent.append_history(conversation_id, ConversationRole.USER, message)
 
-        # P1-A fix: inject skills via ConversationSettings.extra_context if
-        # the SDK supports it; otherwise append to system prompt, NOT user turn.
-        matched_skills = self._skills.match(message)
-        skill_context  = ""
-        if matched_skills:
-            skill_context = "\n\n".join(
-                f"[Skill: {s.name}]\n{getattr(s, 'content', '')}"
-                for s in matched_skills
-            )
-            logger.debug("Injecting %d skill(s) as extra_context", len(matched_skills))
-
         try:
+            # Get workspace for this conversation
+            workspace = self.get_workspace(agent_id, conversation_id)
+            
+            # P1-A: inject skills
+            matched_skills = self._skills.match(message)
+            skill_context  = ""
+            if matched_skills:
+                skill_context = "\n\n".join(
+                    f"[Skill: {s.name}]\n{getattr(s, 'content', '')}"
+                    for s in matched_skills
+                )
+                logger.debug("Injecting %d skill(s) as extra_context", len(matched_skills))
+
             # P1-E: build full conversation history into the context message
             context_message = agent.build_context_message(conversation_id, message)
 
-            # P1-A: prefer ConversationSettings.extra_context; never concat
-            # skill text into the user turn
-            try:
-                if skill_context:
-                    conv_settings = ConversationSettings(extra_context=skill_context)
-                    context = AgentContext(
-                        message=context_message,
-                        settings=conv_settings,
-                    )
-                else:
-                    context = AgentContext(message=context_message)
-            except TypeError:
-                # SDK version doesn't accept these kwargs; fall back gracefully.
-                # Inject skills into system-level context block if possible,
-                # but do NOT prepend to the user turn.
-                context = AgentContext(message=context_message)
-                logger.debug("ConversationSettings not supported by this SDK version")
+            # Append skill context
+            if skill_context:
+                context_message = f"{skill_context}\n\n{context_message}"
 
-            sdk_events = await _run_agent_compat(agent.sdk_agent, context)
+            # P0-F: Use SDK 1.19.1 API with workspace and message
+            sdk_events = await _run_agent_compat(
+                agent.sdk_agent, 
+                workspace, 
+                context_message
+            )
 
             last_content = ""
             for sdk_evt in sdk_events:
                 # P0-B: extract actual content from typed SDK event
-                raw_content = _extract_sdk_content(sdk_evt)
-                raw_thought = _extract_sdk_thought(sdk_evt)
+                raw_content = str(_extract_sdk_content(sdk_evt))
+                raw_thought = str(_extract_sdk_thought(sdk_evt))
                 last_content = raw_content
 
                 # P2-B: trigger post-tool hooks if applicable
-                action_name = getattr(sdk_evt, "action", None) or ""
+                action_name = str(getattr(sdk_evt, "action", "")) if getattr(sdk_evt, "action", None) else ""
                 if action_name:
                     # Pre-hook (informational; we already ran the action)
                     asyncio.ensure_future(
@@ -1843,7 +1930,7 @@ class LocalRuntime:
                     content=raw_content,
                     action_type=action_name or None,
                     source="agent",
-                    thought=raw_thought or None,
+                    thought=str(raw_thought) if raw_thought else None,
                 )
 
                 if action_name:
@@ -1968,7 +2055,7 @@ def create_app(runtime: LocalRuntime) -> Any:
     from fastapi import (
         FastAPI, APIRouter, HTTPException, Query,
         WebSocket, WebSocketDisconnect,
-        Response,
+        Response, Body,
     )
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import StreamingResponse, JSONResponse, PlainTextResponse
@@ -2076,7 +2163,7 @@ def create_app(runtime: LocalRuntime) -> Any:
         }
 
     @agent_router.post("/{agent_id}/llm")
-    async def configure_llm(agent_id: str, req: AgentLLMRequest) -> dict:
+    async def configure_llm(agent_id: str, req: AgentLLMRequest ) -> dict:
         llm = make_llm(req.llm_model, req.llm_api_key, req.llm_base_url)
         if not llm:
             raise HTTPException(400, "llm_model is required")
@@ -2107,7 +2194,7 @@ def create_app(runtime: LocalRuntime) -> Any:
         return {"items": convs, "total": len(convs)}
 
     @conv_router.post("", status_code=201)   # P3-F
-    async def create_conversation(req: ConversationCreateRequest) -> dict:
+    async def create_conversation(req: ConversationCreateRequest ) -> dict:
         rt = _rt()
 
         if req.agent_id:
@@ -2198,7 +2285,7 @@ def create_app(runtime: LocalRuntime) -> Any:
 
     @conv_router.patch("/{conversation_id}")
     async def update_conversation(
-        conversation_id: str, req: ConversationUpdateRequest
+        conversation_id: str, req: ConversationUpdateRequest 
     ) -> dict:
         ok = await _rt().update_conversation(
             conv_id=conversation_id,
@@ -2219,19 +2306,45 @@ def create_app(runtime: LocalRuntime) -> Any:
     # ── send message (REST) ───────────────────────────────────────────────
 
     @conv_router.post("/{conversation_id}/send-message")
-    async def send_message(conversation_id: str, req: SendMessageRequest) -> dict:
+    async def send_message(conversation_id: str, req: SendMessageRequest ) -> dict:
         text   = extract_text(req.message)
         events = []
-        async for evt in _rt().send_message(conversation_id, text):
+        try:
+            async for evt in _rt().send_message(conversation_id, text):
+                events.append(_event_to_wire_dict(
+                    event_id        = evt.id,
+                    conversation_id = evt.conversation_id,
+                    event_type      = type(evt).__name__,
+                    timestamp       = evt.timestamp.isoformat(),
+                    content         = getattr(evt, "content", ""),
+                    action_type     = getattr(evt, "action_type", ""),
+                    source          = getattr(evt, "source", ""),
+                    thought         = getattr(evt, "thought", ""),
+                ))
+        except ValueError as e:
+            # Return friendly error instead of crashing
             events.append(_event_to_wire_dict(
-                event_id        = evt.id,
-                conversation_id = evt.conversation_id,
-                event_type      = type(evt).__name__,
-                timestamp       = evt.timestamp.isoformat(),
-                content         = getattr(evt, "content", ""),
-                action_type     = getattr(evt, "action_type", ""),
-                source          = getattr(evt, "source", ""),
-                thought         = getattr(evt, "thought", ""),
+                event_id        = str(uuid4()),
+                conversation_id = conversation_id,
+                event_type      = "ObservationEvent",
+                timestamp       = _utcnow().isoformat(),
+                content         = f"[Error] {str(e)}",
+                action_type     = "",
+                source          = "runtime",
+                thought         = "",
+            ))
+        except Exception as e:
+            # Log but don't crash
+            logger.exception("Error in send_message")
+            events.append(_event_to_wire_dict(
+                event_id        = str(uuid4()),
+                conversation_id = conversation_id,
+                event_type      = "ObservationEvent",
+                timestamp       = _utcnow().isoformat(),
+                content         = f"[Server Error] {str(e)}",
+                action_type     = "",
+                source          = "runtime",
+                thought         = "",
             ))
         return {"events": events}
 
@@ -2448,7 +2561,7 @@ def create_app(runtime: LocalRuntime) -> Any:
         return _rt().settings.all
 
     @settings_router.post("")
-    async def set_setting(req: SettingSetRequest) -> dict:
+    async def set_setting(req: SettingSetRequest ) -> dict:
         await _rt().settings.set(req.key, req.value)
         return {"success": True}
 
@@ -2468,7 +2581,7 @@ def create_app(runtime: LocalRuntime) -> Any:
         return {"secrets": _rt().list_secrets()}
 
     @secrets_router.post("", status_code=201)   # P3-F
-    async def create_secret(req: SecretCreateRequest) -> dict:
+    async def create_secret(req: SecretCreateRequest ) -> dict:
         await _rt().set_secret(req.name, req.value)
         return {"success": True}
 
@@ -2581,7 +2694,7 @@ def create_app(runtime: LocalRuntime) -> Any:
         }
 
     @mcp_router.post("", status_code=201)   # P3-F
-    async def add_mcp(req: MCPConfigRequest) -> dict:
+    async def add_mcp(req: MCPConfigRequest ) -> dict:
         sid = await _rt().add_mcp_server(req.name, req.command, req.args, req.env)
         return {"server_id": sid}
 
@@ -2632,7 +2745,7 @@ def create_app(runtime: LocalRuntime) -> Any:
         }
 
     @webhook_router.post("")
-    async def register_webhook(req: WebhookRequest) -> dict:
+    async def register_webhook(req: WebhookRequest ) -> dict:
         _rt().register_webhook(req.event_type, req.url)
         return {"success": True}
 
@@ -2678,7 +2791,7 @@ def create_app(runtime: LocalRuntime) -> Any:
         }
 
     @api_router.post("/keys", status_code=201)   # P3-F
-    async def create_api_key(req: APIKeyCreateRequest) -> dict:
+    async def create_api_key(req: APIKeyCreateRequest ) -> dict:
         import secrets as _secrets
         kid   = str(uuid4())
         token = _secrets.token_urlsafe(32)
@@ -2699,7 +2812,7 @@ def create_app(runtime: LocalRuntime) -> Any:
     # ── /api/llm/configure  (P3-D: moved from /api/keys/llm/byor) ─────────
 
     @api_router.post("/llm/configure")
-    async def configure_byor_llm(req: LLMBYORRequest) -> dict:
+    async def configure_byor_llm(req: LLMBYORRequest ) -> dict:
         """
         Configure a 'Bring Your Own [API key]' LLM.
         Stores credentials as a runtime setting and configures any agents
@@ -2738,7 +2851,7 @@ def create_app(runtime: LocalRuntime) -> Any:
     # ── /api/accept_tos ───────────────────────────────────────────────────
 
     @api_router.post("/accept_tos")
-    async def accept_tos(req: AcceptTOSRequest) -> dict:
+    async def accept_tos(req: AcceptTOSRequest ) -> dict:
         # P0-F: app.state, not closure variable
         app.state.tos_accepted = req.accepted
         await _rt().settings.set("tos_accepted", req.accepted)
@@ -2747,7 +2860,7 @@ def create_app(runtime: LocalRuntime) -> Any:
     # ── /api/complete_onboarding ──────────────────────────────────────────
 
     @api_router.post("/complete_onboarding")
-    async def complete_onboarding(req: CompleteOnboardingRequest) -> dict:
+    async def complete_onboarding(req: CompleteOnboardingRequest ) -> dict:
         app.state.onboarding_complete = True
         await _rt().settings.set("onboarding_complete", True)
         return {"success": True}
